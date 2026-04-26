@@ -1,0 +1,65 @@
+# Cool-Bits Extractor — default config.
+# Override per-run with --config <file>. Override syntax is a deep merge.
+
+analyze:
+  shot_detection:
+    detector: content
+    threshold: 27.0
+    min_scene_len: 15  # frames
+  motion:
+    decode_height: 360
+    sample_every_n_frames: 2  # subsample inter-frame deltas for speed
+  clip:
+    model: ViT-B-32
+    pretrained: laion2b_s34b_b79k
+    frames_per_shot: 3
+    prompts:
+      positive:
+        clip_action: "an explosive action scene with motion blur, fire, debris"
+        clip_spectacle: "a spectacular sci-fi visual effects shot, spaceship, lasers, alien"
+        clip_chase: "a fast vehicle chase or running pursuit, cinematic"
+      negative:
+        clip_dialogue: "two people talking face to face in a quiet room"
+        clip_closeup_face: "a close-up of a face talking, calm, indoors"
+  subtitles:
+    prefer_languages: ["eng", "en"]
+    prefer_sdh: true
+  caption_classification:
+    model: claude-haiku-4-5
+    batch_size: 80
+    categories: ["action", "ambient", "dialogue-adjacent", "music"]
+
+render:
+  weights:
+    motion_energy: 1.0
+    action_annotations: 1.5
+    ambient_annotations: 0.2
+    speech_density: -1.2
+    words_per_second: -0.6
+    clip_action: 1.5
+    clip_spectacle: 1.2
+    clip_chase: 1.0
+    clip_dialogue: -1.0
+    clip_closeup_face: -0.6
+  selection:
+    # Quality bar, not a length target. A shot is "cool" if its weighted
+    # score crosses `threshold`. We do not cap total length: we want all
+    # the cool stuff, no matter how much that turns out to be.
+    mode: threshold
+    threshold: 1.5
+    target_duration_s: 360   # only used if mode=target_duration
+    min_shot_duration_s: 0.6
+    max_shot_duration_s: 12.0
+  # Bridge filler shots that sit between two cool shots if the gap is
+  # short — keeps action runs continuous and contributes the ~10%
+  # connective filler that makes the cut watchable.
+  bridge_gap_s: 1.5
+  edge_padding_s: 0.25
+  audio_fade_ms: 150
+  encode:
+    mode: reencode          # or: stream_copy
+    crf: 20
+    preset: veryfast
+    video_codec: libx264
+    audio_codec: aac
+    audio_bitrate: 192k

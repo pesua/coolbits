@@ -1,0 +1,31 @@
+{
+    "name": "Claude Dev",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+
+    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+
+    "containerEnv": {
+        "NODE_OPTIONS": "--max-old-space-size=4096",
+        "TZ": "Europe/Kyiv"
+    },
+
+    "mounts": [
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+        "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,readonly",
+        "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
+        "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
+        "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind"
+    ],
+
+    "runArgs": [
+        "--cap-add=NET_ADMIN",
+        "--cap-add=NET_RAW",
+        "--add-host=host.docker.internal:host-gateway",
+        "--group-add=981"
+    ],
+
+    "remoteUser": "node"
+}

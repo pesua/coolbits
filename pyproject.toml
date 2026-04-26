@@ -1,0 +1,29 @@
+[project]
+name = "coolbits"
+version = "0.1.0"
+description = "Cool-Bits Extractor: produce a supercut of the action/spectacle parts of a sci-fi film."
+authors = [
+    { name = "pesua", email = "anton.chernetskiy@broscorp.net" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "scenedetect[opencv-headless]>=0.6.4",
+    "srt>=3.5",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "tqdm>=4.66",
+    "anthropic>=0.40",
+    "open-clip-torch>=2.24",
+    "torch>=2.2",
+    "pillow>=10",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+coolbits = "coolbits.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
