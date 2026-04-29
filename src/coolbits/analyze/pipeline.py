@@ -13,6 +13,7 @@ from . import captions as captions_stage
 from . import motion as motion_stage
 from . import clip as clip_stage
 from . import assemble as assemble_stage
+from . import proxy as proxy_stage
 
 log = logging.getLogger(__name__)
 
@@ -60,14 +61,21 @@ def run(
     else:
         manifest = existing
 
+    # Stage 0 — optional proxy build. Returns the original path if proxy
+    # mode resolves to off; otherwise builds (or reuses) cache_d/proxy.mkv.
+    proxy_cfg = config["analyze"].get("proxy") or {}
+    analyze_path = proxy_stage.get_or_create(video_path, cache_d, proxy_cfg)
+    proxied = analyze_path != video_path
+    subs_path = analyze_path if (proxied and proxy_stage.has_subs(cache_d)) else video_path
+
     # Stage 1 — shot detection.
     if "shots" in manifest.features_present and manifest.shots and not force:
         log.info("Stage: shot detection — cached (%d shots)", len(manifest.shots))
     else:
-        log.info("Stage: shot detection")
+        log.info("Stage: shot detection%s", " (proxy)" if proxied else "")
         sd = config["analyze"]["shot_detection"]
         shots, sd_meta = shots_stage.detect_shots(
-            video_path,
+            analyze_path,
             threshold=sd["threshold"],
             min_scene_len=sd["min_scene_len"],
         )
@@ -80,7 +88,7 @@ def run(
     # Stage 2 — subtitle extraction. Cheap, always re-fold.
     log.info("Stage: subtitles")
     sub_cfg = config["analyze"]["subtitles"]
-    streams = subs_stage.probe_subtitle_tracks(video_path)
+    streams = subs_stage.probe_subtitle_tracks(subs_path)
     track = subs_stage.pick_track(
         streams,
         prefer_languages=sub_cfg["prefer_languages"],
@@ -90,7 +98,7 @@ def run(
     if track is not None:
         srt_path = cache_d / "subs.srt"
         try:
-            subs_stage.extract_to_srt(video_path, track["index"], srt_path)
+            subs_stage.extract_to_srt(subs_path, track["index"], srt_path)
             cues = subs_stage.parse_srt(srt_path)
             tags = track.get("tags") or {}
             manifest.subtitle_track = {
@@ -138,10 +146,10 @@ def run(
         if "motion_energy" in manifest.features_present and not force:
             log.info("Stage: motion energy — cached")
         else:
-            log.info("Stage: motion energy")
+            log.info("Stage: motion energy%s", " (proxy)" if proxied else "")
             m_cfg = config["analyze"]["motion"]
             motion_scores = motion_stage.compute(
-                video_path,
+                analyze_path,
                 manifest.shots,
                 decode_height=m_cfg["decode_height"],
                 sample_every_n=m_cfg["sample_every_n_frames"],
@@ -157,10 +165,10 @@ def run(
     # is valid. We re-score prompts every run since that's cheap and lets users
     # add prompts without --force.
     if not skip_clip:
-        log.info("Stage: CLIP embedding + prompt scoring")
+        log.info("Stage: CLIP embedding + prompt scoring%s", " (proxy)" if proxied else "")
         c_cfg = config["analyze"]["clip"]
         scores_per_prompt = clip_stage.embed_and_score(
-            video_path,
+            analyze_path,
             manifest.shots,
             cache_dir=cache_d,
             model_name=c_cfg["model"],

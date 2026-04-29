@@ -2,6 +2,15 @@
 # Override per-run with --config <file>. Override syntax is a deep merge.
 
 analyze:
+  # Optional one-shot transcode to a small H.264 proxy used by all
+  # analyze stages (render still uses the original). Big win on 4K HEVC
+  # remuxes; pointless on already-small sources.
+  proxy:
+    mode: auto              # off | on | auto
+    auto_threshold_height: 1440  # auto-build proxy when source is taller than this
+    height: 720
+    crf: 23
+    preset: veryfast
   shot_detection:
     detector: content
     threshold: 27.0
