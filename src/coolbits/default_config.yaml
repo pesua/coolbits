@@ -13,6 +13,11 @@ analyze:
     model: ViT-B-32
     pretrained: laion2b_s34b_b79k
     frames_per_shot: 3
+    # Subsampling rate of the single ffmpeg pass that extracts frames
+    # for embedding. 2 fps gives ~one frame per typical shot at 0.5s
+    # min duration; raise to catch very short shots, lower to halve
+    # decode wall time on huge sources.
+    sample_fps: 2.0
     prompts:
       positive:
         clip_action: "an explosive action scene with motion blur, fire, debris"

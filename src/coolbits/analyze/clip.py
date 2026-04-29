@@ -1,15 +1,19 @@
 """CLIP embedding + prompt scoring.
 
 Sample N frames per shot, embed with OpenCLIP, persist embeddings to the
-cache as a (num_shots × frames_per_shot × dim) float16 array. Compute
-per-prompt cosine similarities and return them as per-shot scalars."""
+cache as a (num_shots × frames_per_shot × dim) float32 array. Compute
+per-prompt cosine similarities and return them as per-shot scalars.
+
+Frame extraction is one linear ffmpeg pass that emits subsampled frames
+to stdout. Each desired sample timestamp is mapped to its nearest frame
+in that stream, so we never re-decode the same GOP twice — critical on
+large 4K HEVC sources where per-shot `-ss` seeks were the bottleneck."""
 
 from __future__ import annotations
 
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -33,31 +37,6 @@ def _to_seconds(tc: str) -> float:
     return int(h) * 3600 + int(m) * 60 + float(rest)
 
 
-def _read_frame(video_path: Path, t: float, size: int = 224) -> np.ndarray | None:
-    cmd = [
-        "ffmpeg",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{t:.3f}",
-        "-i",
-        str(video_path),
-        "-frames:v",
-        "1",
-        "-vf",
-        f"scale={size}:{size}:force_original_aspect_ratio=increase,crop={size}:{size}",
-        "-pix_fmt",
-        "rgb24",
-        "-f",
-        "rawvideo",
-        "-",
-    ]
-    out = subprocess.run(cmd, capture_output=True)
-    if out.returncode != 0 or len(out.stdout) < size * size * 3:
-        return None
-    return np.frombuffer(out.stdout[: size * size * 3], dtype=np.uint8).reshape(size, size, 3).copy()
-
-
 def embed_and_score(
     video_path: Path,
     shots: list[Shot],
@@ -66,27 +45,28 @@ def embed_and_score(
     model_name: str,
     pretrained: str,
     frames_per_shot: int,
+    sample_fps: float,
     prompts_pos: dict[str, str],
     prompts_neg: dict[str, str],
 ) -> dict[str, dict[int, float]]:
     """Returns {feature_name: {shot_index: score}} for all prompts.
 
-    Embeddings are cached under cache_dir/clip_embeddings.npy. If the cache
-    matches (same shot count, same frames_per_shot, same model), we skip
-    re-embedding and score from the cache.
-    """
+    Cache lives at cache_dir/clip_embeddings.npy. We re-embed only when
+    the (model, pretrained, frames_per_shot, sample_fps, num_shots) tuple
+    changes; prompt scoring runs every call from cached embeddings."""
     import torch
     import open_clip
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float32
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     emb_path = cache_dir / "clip_embeddings.npy"
     meta_path = cache_dir / "clip_meta.txt"
 
     expect_shape = (len(shots), frames_per_shot)
-    expect_meta = f"{model_name}|{pretrained}|{frames_per_shot}|{len(shots)}"
+    expect_meta = (
+        f"{model_name}|{pretrained}|{frames_per_shot}|{sample_fps}|{len(shots)}"
+    )
 
     embeddings: np.ndarray | None = None
     if emb_path.exists() and meta_path.exists() and meta_path.read_text().strip() == expect_meta:
@@ -103,45 +83,20 @@ def embed_and_score(
     tokenizer = open_clip.get_tokenizer(model_name)
 
     if embeddings is None:
-        from PIL import Image
-        from tqdm import tqdm
-
-        dim = model.visual.output_dim
-        embeddings = np.zeros((len(shots), frames_per_shot, dim), dtype=np.float32)
-        batch_imgs: list[torch.Tensor] = []
-        batch_idx: list[tuple[int, int]] = []
-        BATCH = 32
-
-        def flush() -> None:
-            if not batch_imgs:
-                return
-            x = torch.stack(batch_imgs).to(device=device, dtype=dtype)
-            with torch.no_grad():
-                feats = model.encode_image(x)
-                feats = feats / feats.norm(dim=-1, keepdim=True)
-            feats_np = feats.cpu().numpy()
-            for (si, fi), v in zip(batch_idx, feats_np):
-                embeddings[si, fi] = v
-            batch_imgs.clear()
-            batch_idx.clear()
-
-        for shot in tqdm(shots, desc="CLIP embedding shots"):
-            timestamps = _sample_timestamps(shot, frames_per_shot)
-            for fi, t in enumerate(timestamps):
-                arr = _read_frame(video_path, t)
-                if arr is None:
-                    continue
-                img = Image.fromarray(arr)
-                batch_imgs.append(preprocess(img))
-                batch_idx.append((shot.index, fi))
-                if len(batch_imgs) >= BATCH:
-                    flush()
-        flush()
+        embeddings = _embed_batched(
+            video_path,
+            shots,
+            model=model,
+            preprocess=preprocess,
+            device=device,
+            frames_per_shot=frames_per_shot,
+            sample_fps=sample_fps,
+        )
         np.save(emb_path, embeddings)
         meta_path.write_text(expect_meta)
         log.info("Saved CLIP embeddings to %s", emb_path)
 
-    # Score prompts.
+    # Score prompts from (cached or fresh) embeddings.
     all_prompts: dict[str, str] = {**prompts_pos, **prompts_neg}
     text_tokens = tokenizer(list(all_prompts.values())).to(device)
     with torch.no_grad():
@@ -149,8 +104,7 @@ def embed_and_score(
         text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
     text_feats_np = text_feats.cpu().numpy()  # (P, dim)
 
-    # mean-pool the per-shot frame embeddings, then cosine.
-    shot_emb = embeddings.mean(axis=1)  # (N, dim)
+    shot_emb = embeddings.mean(axis=1)
     shot_emb = shot_emb / np.maximum(
         np.linalg.norm(shot_emb, axis=1, keepdims=True), 1e-8
     )
@@ -162,3 +116,126 @@ def embed_and_score(
         for j, name in enumerate(names):
             out[name][shot.index] = float(scores[shot.index, j])
     return out
+
+
+def _embed_batched(
+    video_path: Path,
+    shots: list[Shot],
+    *,
+    model,
+    preprocess,
+    device: str,
+    frames_per_shot: int,
+    sample_fps: float,
+) -> np.ndarray:
+    """Single linear ffmpeg pass + map sampled frames onto shots."""
+    import torch
+    from PIL import Image
+    from tqdm import tqdm
+
+    SIZE = 224
+    dim = model.visual.output_dim
+    embeddings = np.zeros((len(shots), frames_per_shot, dim), dtype=np.float32)
+
+    # Map each desired sample (shot, slot) to its nearest frame index in
+    # the subsampled stream. Multiple slots can share a frame index (very
+    # short shots) — that's fine; we'll embed the frame once and reuse.
+    wanted: dict[int, list[tuple[int, int]]] = {}
+    for shot in shots:
+        for slot, t in enumerate(_sample_timestamps(shot, frames_per_shot)):
+            idx = max(0, int(round(t * sample_fps)))
+            wanted.setdefault(idx, []).append((shot.index, slot))
+
+    if not wanted:
+        return embeddings
+
+    max_wanted = max(wanted)
+    log.info(
+        "CLIP frame extraction: %d unique frames at %.2f fps "
+        "(covering %d shots, last frame idx %d ~ t=%.1fs)",
+        len(wanted),
+        sample_fps,
+        len(shots),
+        max_wanted,
+        max_wanted / sample_fps,
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-vf",
+        (
+            f"fps={sample_fps},"
+            f"scale={SIZE}:{SIZE}:force_original_aspect_ratio=increase,"
+            f"crop={SIZE}:{SIZE}"
+        ),
+        "-pix_fmt",
+        "rgb24",
+        "-f",
+        "rawvideo",
+        "-",
+    ]
+    frame_size = SIZE * SIZE * 3
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=frame_size * 64,
+    )
+
+    BATCH = 32
+    batch_imgs: list = []
+    batch_meta: list[tuple[int, int]] = []
+
+    def flush() -> None:
+        if not batch_imgs:
+            return
+        x = torch.stack(batch_imgs).to(device=device)
+        with torch.no_grad():
+            feats = model.encode_image(x)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        feats_np = feats.cpu().numpy()
+        for (si, fi), v in zip(batch_meta, feats_np):
+            embeddings[si, fi] = v
+        batch_imgs.clear()
+        batch_meta.clear()
+
+    pbar = tqdm(total=len(wanted), desc="CLIP embedding frames")
+    frame_idx = 0
+    try:
+        while frame_idx <= max_wanted:
+            buf = proc.stdout.read(frame_size)
+            if len(buf) < frame_size:
+                break
+            slots = wanted.get(frame_idx)
+            if slots is not None:
+                arr = np.frombuffer(buf, dtype=np.uint8).reshape(SIZE, SIZE, 3).copy()
+                img = preprocess(Image.fromarray(arr))
+                for shot_idx, slot in slots:
+                    batch_imgs.append(img)
+                    batch_meta.append((shot_idx, slot))
+                if len(batch_imgs) >= BATCH:
+                    flush()
+                pbar.update(1)
+            frame_idx += 1
+        flush()
+    finally:
+        pbar.close()
+        try:
+            proc.stdout.close()
+        except BrokenPipeError:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    # Backfill: shots whose wanted frames fell past stream end (rare —
+    # rounding above a clip's last frame) keep their zero rows; their
+    # CLIP scores end up at 0 and don't dominate the weighted sum.
+    return embeddings

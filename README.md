@@ -42,6 +42,9 @@ MVP assumes English SDH subs are embedded in the source MKV. A film without SDH 
 
 ## Backlog
 
+**Performance (large 4K HEVC sources)**
+- Optional analyze-time proxy. One-shot transcode of huge 4K HEVC sources to a 720p/1080p H.264 proxy used by all analyze stages (shot detect, motion, CLIP), while render still pulls from the original. Expected savings ≈ two full HEVC decode passes per film. Behind a config flag so small sources skip it.
+
 **Fallbacks for films without SDH subtitles**
 - Silero VAD for speech density.
 - YAMNet for action / music / speech classification from audio.

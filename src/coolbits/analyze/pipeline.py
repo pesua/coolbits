@@ -166,6 +166,7 @@ def run(
             model_name=c_cfg["model"],
             pretrained=c_cfg["pretrained"],
             frames_per_shot=c_cfg["frames_per_shot"],
+            sample_fps=float(c_cfg.get("sample_fps", 2.0)),
             prompts_pos=c_cfg["prompts"]["positive"],
             prompts_neg=c_cfg["prompts"]["negative"],
         )

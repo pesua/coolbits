@@ -11,6 +11,8 @@ wheels/
 
 .coolbits
 
+videos/
+
 *.mp4
 *.mkv
 .env
