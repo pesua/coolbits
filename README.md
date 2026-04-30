@@ -8,7 +8,7 @@ The selection is a coolness threshold, not a target length. We want all the cool
 
 ## Install & run
 
-Requires `ffmpeg`/`ffprobe` on `PATH` and [`uv`](https://docs.astral.sh/uv/).
+Requires `ffmpeg`/`ffprobe` on `PATH` and [`uv`](https://docs.astral.sh/uv/). Set `ANTHROPIC_API_KEY` in the environment or a `.env` at the project root for LLM caption classification (see note below).
 
 ```sh
 uv sync
